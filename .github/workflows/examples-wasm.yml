@@ -1,8 +1,9 @@
 name: Examples WASM
+
 on:
   push:
-    branches: ["master"]
-
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -11,86 +12,160 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
 
 jobs:
   deploy-wasm-github-pages:
+    name: Build and deploy WASM examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
-      - name: Setup emsdk
+      - name: Setup Emscripten SDK
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Build WASM Examples
-        # Enable for real build later in whisper.cpp
+      - name: Verify Emscripten
+        shell: bash
         run: |
-          mkdir -p build-em && cd build-em
-          emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j
+          set -euo pipefail
+          emcc --version
+          emcmake --version
+          cmake --version
+
+      - name: Build WASM examples
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emcmake cmake \
+            -B build-em \
+            -S . \
+            -DCMAKE_BUILD_TYPE=Release
+
+          cmake --build build-em --parallel 2
+
+      - name: Verify generated WASM files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-em/bin"
+
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::No se encontró el directorio $BUILD_DIR"
+            echo "Directorios generados:"
+            find build-em -maxdepth 3 -type d | sort || true
+            exit 1
+          fi
+
+          echo "Archivos generados:"
+          find "$BUILD_DIR" -maxdepth 3 -type f | sort
+
+          for file in \
+            command.wasm/index.html \
+            command.wasm/command.js \
+            bench.wasm/index.html \
+            bench.wasm/bench.js \
+            stream.wasm/index.html \
+            stream.wasm/stream.js \
+            whisper.wasm/index.html \
+            whisper.wasm/main.js
+          do
+            if [ ! -f "$BUILD_DIR/$file" ]; then
+              echo "::error::Falta el archivo generado: $BUILD_DIR/$file"
+              exit 1
+            fi
+          done
 
       - name: Create staging directory
-        run: mkdir -p staging
-
-      - name: Create .nojekyll file in staging directory
-        run: touch staging/.nojekyll
-
-      - name: Copy application files
+        shell: bash
         run: |
-          build_dir=build-em/bin
+          set -euo pipefail
+          mkdir -p staging
+          touch staging/.nojekyll
 
-          ls ${build_dir}
-
-          # command.wasm
-          target_dir=staging/command.wasm
-          mkdir -p ${target_dir}
-          cp ${build_dir}/command.wasm/{index.html,command.js,helpers.js} ${target_dir}
-          cp ${build_dir}/libcommand.js ${target_dir}
-
-          # bench.wasm
-          target_dir=staging/bench.wasm
-          mkdir -p ${target_dir}
-          cp ${build_dir}/bench.wasm/{index.html,bench.js,helpers.js} ${target_dir}
-          cp ${build_dir}/libbench.js ${target_dir}
-
-          # stream.wasm
-          target_dir=staging/stream.wasm
-          mkdir -p ${target_dir}
-          cp ${build_dir}/stream.wasm/{index.html,stream.js,helpers.js} ${target_dir}
-          cp ${build_dir}/libstream.js ${target_dir}
-
-          # wchess.wasm
-          target_dir=staging/wchess.wasm
-          mkdir -p ${target_dir}
-          cp -r ${build_dir}/wchess.wasm/{index.html,css,img,js} ${target_dir}
-          cp ${build_dir}/wchess.wasm.js ${target_dir}
-
-          # whisper.wasm (this will be the main example page)
-          target_dir=staging
-          mkdir -p ${target_dir}
-          cp ${build_dir}/whisper.wasm/{index.html,main.js,helpers.js} ${target_dir}
-          cp ${build_dir}/libmain.js ${target_dir}
-
-          # Copy Cross-Origin Isolation service worker
-          cp -v examples/coi-serviceworker.js staging/
-
-      - name: List files in staging directory (for debugging)
+      - name: Prepare WASM website
+        shell: bash
         run: |
-          echo "Files in staging directory:"
-          find staging -type f | sort
+          set -euo pipefail
 
-      - name: Upload artifact
+          BUILD_DIR="build-em/bin"
+
+          # Command example
+          mkdir -p staging/command.wasm
+          cp "$BUILD_DIR/command.wasm/index.html" staging/command.wasm/
+          cp "$BUILD_DIR/command.wasm/command.js" staging/command.wasm/
+          cp "$BUILD_DIR/command.wasm/helpers.js" staging/command.wasm/
+          cp "$BUILD_DIR/libcommand.js" staging/command.wasm/
+
+          # Benchmark example
+          mkdir -p staging/bench.wasm
+          cp "$BUILD_DIR/bench.wasm/index.html" staging/bench.wasm/
+          cp "$BUILD_DIR/bench.wasm/bench.js" staging/bench.wasm/
+          cp "$BUILD_DIR/bench.wasm/helpers.js" staging/bench.wasm/
+          cp "$BUILD_DIR/libbench.js" staging/bench.wasm/
+
+          # Streaming example
+          mkdir -p staging/stream.wasm
+          cp "$BUILD_DIR/stream.wasm/index.html" staging/stream.wasm/
+          cp "$BUILD_DIR/stream.wasm/stream.js" staging/stream.wasm/
+          cp "$BUILD_DIR/stream.wasm/helpers.js" staging/stream.wasm/
+          cp "$BUILD_DIR/libstream.js" staging/stream.wasm/
+
+          # WChess example
+          mkdir -p staging/wchess.wasm
+          cp "$BUILD_DIR/wchess.wasm.js" staging/wchess.wasm/
+          cp -r "$BUILD_DIR/wchess.wasm/index.html" staging/wchess.wasm/
+          cp -r "$BUILD_DIR/wchess.wasm/css" staging/wchess.wasm/
+          cp -r "$BUILD_DIR/wchess.wasm/img" staging/wchess.wasm/
+          cp -r "$BUILD_DIR/wchess.wasm/js" staging/wchess.wasm/
+
+          # Main Whisper example
+          cp "$BUILD_DIR/whisper.wasm/index.html" staging/
+          cp "$BUILD_DIR/whisper.wasm/main.js" staging/
+          cp "$BUILD_DIR/whisper.wasm/helpers.js" staging/
+          cp "$BUILD_DIR/libmain.js" staging/
+
+          # Cross-origin isolation service worker
+          if [ -f examples/coi-serviceworker.js ]; then
+            cp examples/coi-serviceworker.js staging/
+          else
+            echo "::error::No se encontró examples/coi-serviceworker.js"
+            exit 1
+          fi
+
+      - name: Verify website contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Contenido del sitio:"
+          find staging -type f -printf '%p (%s bytes)\n' | sort
+
+          test -s staging/index.html
+          test -s staging/main.js
+          test -s staging/libmain.js
+          test -s staging/.nojekyll
+
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./staging
+          path: staging
 
       - name: Deploy to GitHub Pages
         id: deployment
