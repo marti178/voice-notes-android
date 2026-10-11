@@ -1,13 +1,18 @@
+
 name: Build Voice Notes APK
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - master
     paths:
       - '.github/workflows/build-voice-notes-apk.yml'
       - 'examples/whisper.android/**'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'include/**'
+      - 'ggml/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,7 +25,7 @@ jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -28,31 +33,28 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Verify Android project
+      - name: Verify Android project and native sources
         shell: bash
         run: |
           set -euo pipefail
 
           PROJECT="examples/whisper.android"
 
-          if [ ! -f "$PROJECT/gradlew" ]; then
-            echo "::error::No se encontró $PROJECT/gradlew"
-            exit 1
-          fi
+          test -f "$PROJECT/gradlew"
+          test -f "$PROJECT/settings.gradle"
+          test -f "$PROJECT/build.gradle"
+          test -f "$PROJECT/app/build.gradle"
+          test -f "$PROJECT/lib/build.gradle"
 
-          if [ ! -f "$PROJECT/settings.gradle" ] &&
-             [ ! -f "$PROJECT/settings.gradle.kts" ]; then
-            echo "::error::No se encontró el archivo settings de Gradle"
-            exit 1
-          fi
+          test -f "$PROJECT/gradle/wrapper/gradle-wrapper.properties"
+          test -f "$PROJECT/lib/src/main/jni/whisper/CMakeLists.txt"
+          test -f "CMakeLists.txt"
+          test -f "src/whisper.cpp"
+          test -d "ggml"
 
-          if [ ! -f "$PROJECT/app/build.gradle" ] &&
-             [ ! -f "$PROJECT/app/build.gradle.kts" ]; then
-            echo "::error::No se encontró la configuración de la aplicación Android"
-            exit 1
-          fi
-
-          echo "Proyecto Android verificado."
+          echo "Proyecto Android y fuentes nativas encontrados."
+          echo "Configuración Gradle:"
+          cat "$PROJECT/gradle/wrapper/gradle-wrapper.properties"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -60,12 +62,21 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-          cache-dependency-path: examples/whisper.android/**/*.gradle*
+          cache-dependency-path: |
+            examples/whisper.android/gradle/wrapper/gradle-wrapper.properties
+            examples/whisper.android/**/*.gradle
+            examples/whisper.android/**/*.gradle.kts
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install Android SDK, NDK and CMake
         shell: bash
         run: |
           set -euo pipefail
@@ -73,22 +84,20 @@ jobs:
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
-            "build-tools;34.0.0"
+            "build-tools;34.0.0" \
+            "ndk;25.2.9519653" \
+            "cmake;3.22.1"
 
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "Versiones instaladas:"
+          java -version
+          sdkmanager --list_installed
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-disabled: false
-
-      - name: Check Gradle wrapper
+      - name: Prepare Gradle wrapper
         working-directory: examples/whisper.android
         shell: bash
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          java -version
           ./gradlew --version
 
       - name: Install model download utility
@@ -97,10 +106,10 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade gdown
 
-      - name: Download AI models
+      - name: Download and verify AI models
         shell: bash
         env:
-          MODEL_FOLDER_URL: https://drive.google.com/drive/folders/1dO2Wqe6b-FBWRtLeiktaCbH-PBy-wca0
+          MODEL_FOLDER_URL: https://drive.google.com/drive/folders/1dO2Wqe6b-FBWRtLeiktaCbH-PBy-wca0?usp=sharing
         run: |
           set -euo pipefail
 
@@ -109,6 +118,7 @@ jobs:
 
           mkdir -p "$DOWNLOAD_DIR" "$ASSETS_DIR"
 
+          echo "Descargando modelos desde Google Drive..."
           gdown --folder "$MODEL_FOLDER_URL" -O "$DOWNLOAD_DIR"
 
           echo "Archivos descargados:"
@@ -131,11 +141,18 @@ jobs:
               exit 1
             fi
 
+            size="$(stat -c '%s' "$found")"
+            if [ "$size" -lt 1048576 ]; then
+              echo "::error::El archivo $model mide menos de 1 MiB; puede ser una descarga incorrecta."
+              exit 1
+            fi
+
             cp "$found" "$ASSETS_DIR/$model"
-            echo "Modelo preparado: $model"
+            echo "Modelo verificado: $model ($size bytes)"
           done
 
-          echo "Tamaño total de los modelos:"
+          echo "Contenido final de assets/models:"
+          ls -lh "$ASSETS_DIR"
           du -sh "$ASSETS_DIR"
 
       - name: Build debug APK
@@ -152,19 +169,18 @@ jobs:
             --warning-mode all \
             assembleDebug
 
-      - name: Verify APK
+      - name: Verify generated APK
         id: verify_apk
         shell: bash
         run: |
           set -euo pipefail
 
           APK_DIR="examples/whisper.android/app/build/outputs/apk/debug"
-          mkdir -p "$APK_DIR"
-
           APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "::error::La compilación terminó sin generar un APK."
+            echo "::error::Gradle terminó sin generar un APK."
+            find examples/whisper.android/app/build/outputs -maxdepth 5 -type f || true
             exit 1
           fi
 
@@ -176,6 +192,7 @@ jobs:
           echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
           echo "APK generado correctamente:"
           ls -lh "$APK"
+          sha256sum "$APK"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
