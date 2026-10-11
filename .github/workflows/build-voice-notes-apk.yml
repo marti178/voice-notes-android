@@ -67,8 +67,17 @@ jobs:
             examples/whisper.android/**/*.gradle
             examples/whisper.android/**/*.gradle.kts
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKM="$(find "$SDK/cmdline-tools" -name sdkmanager -type f -print -quit)"
+          test -n "$SDKM"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKM")" >> "$GITHUB_PATH"
+          echo "SDK: $SDK / sdkmanager: $SDKM"
 
       - name: Accept Android SDK licenses
         shell: bash
